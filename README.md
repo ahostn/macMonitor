@@ -15,4 +15,6 @@ run chmod +x monitor.sh
 
 run ./monitor.sh
 
+use -w to watch download/upload and -i <secunds> to refresh display. Default refresh time is 3s.
+
 
