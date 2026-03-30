@@ -7,9 +7,9 @@ How to use:
 
 open Terminal
 
-type nano monotor.sh
+run curl https://raw.githubusercontent.com/ahostn/macMonitor/refs/heads/main/monitor.sh > monitor.sh
 
-save and exit
+You can also copy and paste the code and use "nano monitor.sh" to create the file, save it with ctrl+x.
 
 run chmod +x monitor.sh
 
