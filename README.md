@@ -1,5 +1,5 @@
-# macMonitor
-Monitor your mac resources from terminal
+# macMonitor + linuxMonitor
+Monitor your mac or linux resources from terminal
 
 
 
@@ -9,7 +9,9 @@ open Terminal
 
 run nano monitor.sh
 
-COPY RAW file monitor.txt and paste it to monitor.sh; save and exit nano
+MAC OS: COPY RAW file monitor.txt and paste it to monitor.sh; save and exit nano
+
+LINUX: COPY RAW file linuxMonitor.txt and paste it to monitor.sh; save and exit nano
 
 run chmod +x monitor.sh
 
