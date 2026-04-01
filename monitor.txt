@@ -226,8 +226,8 @@ get_processes() {
   section "TOP PROCESSES  (by CPU usage)"
 
   # Print table header
-  printf "  ${BLD}%-6s  %-5s  %-5s  %-10s  %s${RST}\n" "PID" "CPU%" "MEM%" "USER" "PROCESS"
-  echo -e "  ${DIM}$(printf '─%.0s' {1..60})${RST}"
+  printf "  ${BLD}%-6s  %-5s  %-5s  %-12s  %s${RST}\n" "PID" "CPU%" "MEM%" "USER" "PROCESS"
+  echo -e "  ${DIM}$(printf '─%.0s' {1..50})${RST}"
 
   # Use ps to get processes sorted by CPU descending, show top 15
   ps aux | sort -rn -k3 | awk 'NR>1 && NR<=16' | while read -r line; do
@@ -249,7 +249,7 @@ get_processes() {
     (( cpu_int >= 50 )) && cpu_color=$RED
     (( cpu_int >= 20 && cpu_int < 50 )) && cpu_color=$YEL
 
-    printf "  ${DIM}%-6s${RST}  ${cpu_color}${BLD}%-5s${RST}  ${DIM}%-5s  %-10s${RST}  %s\n" \
+    printf "  ${DIM}%-6s${RST}  ${cpu_color}${BLD}%-5s${RST}  ${DIM}%-5s  %-12s${RST}  %s\n" \
       "$pid" "$cpu" "$mem" "$user" "$name"
   done
 }
