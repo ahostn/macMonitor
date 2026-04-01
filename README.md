@@ -18,4 +18,4 @@ run ./monitor.sh
 use -w to watch download/upload and -i <secunds> to refresh display. Default refresh time is 3s.
 
 
-TODO: set flag to only show cpu, ram, disk or network usage, comming soon!
+TODO: show proccess list ordered by cpu usage
