@@ -1,4 +1,4 @@
-28511#!/bin/bash
+#!/bin/bash
 export LC_ALL=C
 export LANG=C
 
