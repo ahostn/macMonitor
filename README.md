@@ -7,19 +7,9 @@ How to INSTALL:
 
 open Terminal
 
-run curl https://raw.githubusercontent.com/ahostn/macMonitor/refs/heads/main/monitor.sh > monitor.sh
+run nano monitor.sh
 
-OR
-
-You can also copy and paste the code and use "nano monitor.sh" to create the file, save it with ctrl+x.
-
-OR
-
-run git clone https://github.com/ahostn/macMonitor.git
-
-run cd macMonitor
-
-THEN DO
+COPY RAW file monitor.txt and paste it to monitor.sh; save and exit nano
 
 run chmod +x monitor.sh
 
