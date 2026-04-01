@@ -4,21 +4,52 @@ export LANG=C
 
 # ─────────────────────────────────────────────
 #  monitor.sh — macOS System Monitor
-#  Usage: bash monitor.sh [-w] [-i SECONDS]
+#  Usage: bash monitor.sh [-w] [-i SECONDS] [-s SECTIONS]
 #    -w            Watch mode (auto-refresh)
 #    -i SECONDS    Refresh interval (default: 3)
+#    -s SECTIONS   Comma-separated sections to show:
+#                  cpu, ram, disk, network
+#                  (default: all)
+#
+#  Examples:
+#    bash monitor.sh -s cpu,ram
+#    bash monitor.sh -s disk
+#    bash monitor.sh -w -i 5 -s cpu,network
 # ─────────────────────────────────────────────
 
 INTERVAL=3
 WATCH=false
+SECTIONS="cpu,ram,disk,network"
 
-while getopts "wi:" opt; do
+usage() {
+  echo "Usage: $0 [-w] [-i SECONDS] [-s SECTIONS]"
+  echo ""
+  echo "  -w              Watch mode (auto-refresh)"
+  echo "  -i SECONDS      Refresh interval (default: 3)"
+  echo "  -s SECTIONS     Comma-separated list of sections to show"
+  echo "                  Available: cpu, ram, disk, network"
+  echo "                  Default: all"
+  echo ""
+  echo "  Examples:"
+  echo "    $0 -s cpu,ram"
+  echo "    $0 -s disk"
+  echo "    $0 -w -i 5 -s cpu,network"
+  exit 1
+}
+
+while getopts "wi:s:" opt; do
   case $opt in
     w) WATCH=true ;;
     i) INTERVAL="$OPTARG" ;;
-    *) echo "Usage: $0 [-w] [-i seconds]"; exit 1 ;;
+    s) SECTIONS="$OPTARG" ;;
+    *) usage ;;
   esac
 done
+
+# Check if a section is enabled
+has_section() {
+  echo "$SECTIONS" | tr ',' '\n' | grep -qx "$1"
+}
 
 # ── Colors ────────────────────────────────────
 RED='\033[0;31m'
@@ -143,7 +174,6 @@ get_disk() {
   done
 }
 
-# Snapshot for delta calculation
 _NET_PREV=""
 get_network() {
   local iface
@@ -188,17 +218,19 @@ get_uptime() {
   local cores
   cores=$(sysctl -n hw.logicalcpu)
 
-  # Extract the three load average values
   local load_raw
   load_raw=$(uptime | awk -F'load averages:' '{print $2}' | xargs)
   local l1=$(echo "$load_raw"  | awk '{print $1}')
   local l5=$(echo "$load_raw"  | awk '{print $2}')
   local l15=$(echo "$load_raw" | awk '{print $3}')
 
-  # Convert to % of total CPU capacity; clamp at 100 for the bar
   local p1=$(awk  "BEGIN {v=int(($l1  / $cores) * 100); print (v>100)?100:v}")
   local p5=$(awk  "BEGIN {v=int(($l5  / $cores) * 100); print (v>100)?100:v}")
   local p15=$(awk "BEGIN {v=int(($l15 / $cores) * 100); print (v>100)?100:v}")
+
+  # Build active sections label for header
+  local showing
+  showing=$(echo "$SECTIONS" | tr ',' ' ' | tr '[:lower:]' '[:upper:]')
 
   echo
   echo -e "${MAG}${BLD}  ╔══════════════════════════════════════════════════╗${RST}"
@@ -206,6 +238,7 @@ get_uptime() {
   echo -e "${MAG}${BLD}  ╚══════════════════════════════════════════════════╝${RST}"
   printf "  ${DIM}Host: %-20s  User: %-15s${RST}\n" "$hostname" "$user"
   printf "  ${DIM}Uptime: %-16s  Cores: %s${RST}\n" "$up" "$cores"
+  printf "  ${DIM}Showing: %s${RST}\n" "$showing"
   printf "\n"
   printf "  ${DIM}Load  1m :${RST}  "; bar $p1  20; printf "  ${DIM}(raw: %s)${RST}\n" "$l1"
   printf "  ${DIM}Load  5m :${RST}  "; bar $p5  20; printf "  ${DIM}(raw: %s)${RST}\n" "$l5"
@@ -218,10 +251,10 @@ get_uptime() {
 
 render() {
   get_uptime
-  get_cpu
-  get_ram
-  get_disk
-  get_network
+  has_section "cpu"     && get_cpu
+  has_section "ram"     && get_ram
+  has_section "disk"    && get_disk
+  has_section "network" && get_network
   echo
 }
 
