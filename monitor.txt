@@ -69,7 +69,10 @@ bar() {
   local pct=$1
   local width=${2:-30}
   local filled=$(( pct * width / 100 ))
+  # Always show at least 1 block if pct > 0
+  (( pct > 0 && filled == 0 )) && filled=1
   local empty=$(( width - filled ))
+  (( empty < 0 )) && empty=0
 
   if   (( pct >= 85 )); then local color=$RED
   elif (( pct >= 60 )); then local color=$YEL
@@ -77,9 +80,9 @@ bar() {
   fi
 
   printf "${color}"
-  printf '%0.s█' $(seq 1 $filled)
+  [[ $filled -gt 0 ]] && printf '%0.s█' $(seq 1 $filled)
   printf "${DIM}"
-  printf '%0.s░' $(seq 1 $empty)
+  [[ $empty -gt 0 ]]  && printf '%0.s░' $(seq 1 $empty)
   printf "${RST}"
   printf " ${BLD}%3d%%${RST}" "$pct"
 }
@@ -170,9 +173,18 @@ get_disk() {
     local pct=$(echo "$line"   | awk '{gsub(/%/,""); print $5}')
     local mount=$(echo "$line" | awk '{print $9}')
 
-    printf "  ${CYN}${BLD}%-20s${RST}\n" "$mount ($dev)"
-    printf "  %-14s " ""; bar "$pct"; echo
-    printf "  ${DIM}Size: %-8s  Used: %-8s  Free: %s${RST}\n\n" "$size" "$used" "$avail"
+    # Layout: "  mountpoint (dev)"
+    # then:   "  Size: X   Used: [bar] PCT%   Free: Y"
+    local label
+    label=$(printf "%-35s" "$mount ($dev)")
+
+    printf "  ${CYN}${BLD}%s${RST}
+" "$label"
+    printf "  ${DIM}Size: %-6s  Used: %-8s${RST}" "$size" "$used"
+    bar "$pct" 25
+    printf "  ${DIM}Free: %-8s${RST}
+
+" "$avail"
   done
 }
 
