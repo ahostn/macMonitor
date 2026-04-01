@@ -1,0 +1,320 @@
+#!/bin/bash
+export LC_ALL=C
+export LANG=C
+
+# ─────────────────────────────────────────────
+#  monitor-linux.sh — Linux System Monitor
+#  Usage: bash monitor-linux.sh [-w] [-i SECONDS] [-s SECTIONS]
+#    -w            Watch mode (auto-refresh)
+#    -i SECONDS    Refresh interval (default: 3)
+#    -s SECTIONS   Comma-separated sections to show:
+#                  cpu, ram, disk, network, processes
+#                  (default: all)
+#
+#  Examples:
+#    bash monitor-linux.sh -s cpu,ram
+#    bash monitor-linux.sh -s disk
+#    bash monitor-linux.sh -w -i 5 -s cpu,network
+#    bash monitor-linux.sh -s processes
+# ─────────────────────────────────────────────
+
+INTERVAL=3
+WATCH=false
+SECTIONS="cpu,ram,disk,network,processes"
+
+usage() {
+  echo "Usage: $0 [-w] [-i SECONDS] [-s SECTIONS]"
+  echo ""
+  echo "  -w              Watch mode (auto-refresh)"
+  echo "  -i SECONDS      Refresh interval (default: 3)"
+  echo "  -s SECTIONS     Comma-separated list of sections to show"
+  echo "                  Available: cpu, ram, disk, network, processes"
+  echo "                  Default: all"
+  echo ""
+  echo "  Examples:"
+  echo "    $0 -s cpu,ram"
+  echo "    $0 -s disk"
+  echo "    $0 -w -i 5 -s cpu,network"
+  echo "    $0 -s processes"
+  exit 1
+}
+
+while getopts "wi:s:" opt; do
+  case $opt in
+    w) WATCH=true ;;
+    i) INTERVAL="$OPTARG" ;;
+    s) SECTIONS="$OPTARG" ;;
+    *) usage ;;
+  esac
+done
+
+has_section() {
+  echo "$SECTIONS" | tr ',' '\n' | grep -qx "$1"
+}
+
+# ── Colors ────────────────────────────────────
+RED='\033[0;31m'
+YEL='\033[0;33m'
+GRN='\033[0;32m'
+CYN='\033[0;36m'
+BLU='\033[0;34m'
+MAG='\033[0;35m'
+BLD='\033[1m'
+DIM='\033[2m'
+RST='\033[0m'
+
+# ── Bar renderer ──────────────────────────────
+bar() {
+  local pct=$1
+  local width=${2:-30}
+  local filled=$(( pct * width / 100 ))
+  local empty=$(( width - filled ))
+
+  if   (( pct >= 85 )); then local color=$RED
+  elif (( pct >= 60 )); then local color=$YEL
+  else                       local color=$GRN
+  fi
+
+  printf "${color}"
+  printf '%0.s█' $(seq 1 $filled)
+  printf "${DIM}"
+  printf '%0.s░' $(seq 1 $empty)
+  printf "${RST}"
+  printf " ${BLD}%3d%%${RST}" "$pct"
+}
+
+# ── Bytes formatter ───────────────────────────
+fmt_bytes() {
+  local bytes=$1
+  if   (( bytes >= 1073741824 )); then awk "BEGIN {printf \"%.1f GB\", $bytes/1073741824}"
+  elif (( bytes >= 1048576 ));    then awk "BEGIN {printf \"%.1f MB\", $bytes/1048576}"
+  elif (( bytes >= 1024 ));       then awk "BEGIN {printf \"%.1f KB\", $bytes/1024}"
+  else                                 printf "%d B"  "$bytes"
+  fi
+}
+
+# ── Section header ────────────────────────────
+section() {
+  echo
+  echo -e "${BLU}${BLD}  ▸ $1${RST}"
+  echo -e "${DIM}  $(printf '─%.0s' {1..50})${RST}"
+}
+
+# ─────────────────────────────────────────────
+#  DATA COLLECTORS
+# ─────────────────────────────────────────────
+
+get_cpu() {
+  # Read two snapshots of /proc/stat to calculate real usage
+  local stat1 stat2
+  stat1=$(grep '^cpu ' /proc/stat)
+  sleep 0.5
+  stat2=$(grep '^cpu ' /proc/stat)
+
+  local idle1=$(echo "$stat1" | awk '{print $5}')
+  local idle2=$(echo "$stat2" | awk '{print $5}')
+  local total1=$(echo "$stat1" | awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}')
+  local total2=$(echo "$stat2" | awk '{s=0; for(i=2;i<=NF;i++) s+=$i; print s}')
+
+  local diff_idle=$(( idle2 - idle1 ))
+  local diff_total=$(( total2 - total1 ))
+  local used=$(( (diff_total - diff_idle) * 100 / diff_total ))
+
+  # Individual fields from second snapshot
+  local user=$(echo "$stat2"   | awk '{printf "%d", ($2-u2)*100/(t2-t1)}' u2="$(echo "$stat1"|awk '{print $2}')" t1="$total1" t2="$total2")
+  local system=$(echo "$stat2" | awk '{printf "%d", ($4-s2)*100/(t2-t1)}' s2="$(echo "$stat1"|awk '{print $4}')" t1="$total1" t2="$total2")
+  local idle_pct=$(( 100 - used ))
+
+  local cores
+  cores=$(nproc)
+  local model
+  model=$(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)
+
+  section "CPU"
+  printf "  %-14s " "Usage:"; bar $used; echo
+  printf "\n"
+  printf "  ${DIM}Model      :${RST}  %s\n"   "$model"
+  printf "  ${DIM}Cores      :${RST}  %s\n"   "$cores"
+  printf "  ${DIM}User       :${RST}  %s%%\n" "$user"
+  printf "  ${DIM}System     :${RST}  %s%%\n" "$system"
+  printf "  ${DIM}Idle       :${RST}  %s%%\n" "$idle_pct"
+}
+
+get_ram() {
+  local meminfo
+  meminfo=$(cat /proc/meminfo)
+
+  local total=$(echo "$meminfo"     | awk '/^MemTotal:/     {print $2}')
+  local free=$(echo "$meminfo"      | awk '/^MemFree:/      {print $2}')
+  local available=$(echo "$meminfo" | awk '/^MemAvailable:/ {print $2}')
+  local buffers=$(echo "$meminfo"   | awk '/^Buffers:/      {print $2}')
+  local cached=$(echo "$meminfo"    | awk '/^Cached:/       {print $2}')
+  local swap_total=$(echo "$meminfo"| awk '/^SwapTotal:/    {print $2}')
+  local swap_free=$(echo "$meminfo" | awk '/^SwapFree:/     {print $2}')
+
+  # All values from /proc/meminfo are in kB
+  local used=$(( total - available ))
+  local pct=$(( used * 100 / total ))
+  local swap_used=$(( swap_total - swap_free ))
+  local swap_pct=0
+  (( swap_total > 0 )) && swap_pct=$(( swap_used * 100 / swap_total ))
+
+  # Convert kB → bytes for fmt_bytes
+  section "RAM"
+  printf "  %-14s " "Usage:"; bar $pct; echo
+  printf "\n"
+  printf "  ${DIM}Total      :${RST}  %s\n"  "$(fmt_bytes $(( total     * 1024 )))"
+  printf "  ${DIM}Used       :${RST}  %s\n"  "$(fmt_bytes $(( used      * 1024 )))"
+  printf "  ${DIM}Available  :${RST}  %s\n"  "$(fmt_bytes $(( available * 1024 )))"
+  printf "  ${DIM}Free       :${RST}  %s\n"  "$(fmt_bytes $(( free      * 1024 )))"
+  printf "  ${DIM}Buffers    :${RST}  %s\n"  "$(fmt_bytes $(( buffers   * 1024 )))"
+  printf "  ${DIM}Cached     :${RST}  %s\n"  "$(fmt_bytes $(( cached    * 1024 )))"
+  printf "\n"
+  printf "  %-14s " "Swap:"; bar $swap_pct; echo
+  printf "  ${DIM}Swap Total :${RST}  %s\n"  "$(fmt_bytes $(( swap_total * 1024 )))"
+  printf "  ${DIM}Swap Used  :${RST}  %s\n"  "$(fmt_bytes $(( swap_used  * 1024 )))"
+}
+
+get_disk() {
+  section "DISK"
+  df -BM | grep -E '^/dev/' | while read -r line; do
+    local dev=$(echo "$line"   | awk '{print $1}' | sed 's|/dev/||')
+    local size=$(echo "$line"  | awk '{print $2}' | tr -d 'M')
+    local used=$(echo "$line"  | awk '{print $3}' | tr -d 'M')
+    local avail=$(echo "$line" | awk '{print $4}' | tr -d 'M')
+    local pct=$(echo "$line"   | awk '{gsub(/%/,""); print $5}')
+    local mount=$(echo "$line" | awk '{print $6}')
+
+    # Convert MB to bytes for fmt_bytes
+    printf "  ${CYN}${BLD}%-20s${RST}\n" "$mount ($dev)"
+    printf "  %-14s " ""; bar "$pct"; echo
+    printf "  ${DIM}Size: %-10s  Used: %-10s  Free: %s${RST}\n\n" \
+      "$(fmt_bytes $(( size  * 1048576 )))" \
+      "$(fmt_bytes $(( used  * 1048576 )))" \
+      "$(fmt_bytes $(( avail * 1048576 )))"
+  done
+}
+
+# Snapshot for network delta calculation
+_NET_PREV=""
+get_network() {
+  # Find default interface
+  local iface
+  iface=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
+  [[ -z "$iface" ]] && { echo -e "  ${RED}No active network interface found.${RST}"; return; }
+
+  local rx=$(cat /sys/class/net/"$iface"/statistics/rx_bytes 2>/dev/null || echo 0)
+  local tx=$(cat /sys/class/net/"$iface"/statistics/tx_bytes 2>/dev/null || echo 0)
+
+  section "NETWORK  (interface: ${CYN}${iface}${RST}${BLU})"
+
+  if [[ -n "$_NET_PREV" ]]; then
+    local prev_rx=$(echo "$_NET_PREV" | awk '{print $1}')
+    local prev_tx=$(echo "$_NET_PREV" | awk '{print $2}')
+    local drx=$(( rx - prev_rx ))
+    local dtx=$(( tx - prev_tx ))
+    local rx_rate=$(( drx / INTERVAL ))
+    local tx_rate=$(( dtx / INTERVAL ))
+    printf "  ${DIM}↓ Download rate :${RST}  %s/s\n" "$(fmt_bytes $rx_rate)"
+    printf "  ${DIM}↑ Upload rate   :${RST}  %s/s\n" "$(fmt_bytes $tx_rate)"
+    printf "\n"
+  else
+    printf "  ${DIM}(Rates available on next refresh in watch mode)${RST}\n\n"
+  fi
+
+  printf "  ${DIM}↓ Total received:${RST}  %s\n" "$(fmt_bytes $rx)"
+  printf "  ${DIM}↑ Total sent    :${RST}  %s\n" "$(fmt_bytes $tx)"
+
+  _NET_PREV="$rx $tx"
+}
+
+get_processes() {
+  section "TOP PROCESSES  (by CPU usage)"
+
+  printf "  ${BLD}%-8s  %-6s  %-6s  %-12s  %s${RST}\n" "PID" "CPU%" "MEM%" "USER" "PROCESS"
+  echo -e "  ${DIM}$(printf '─%.0s' {1..60})${RST}"
+
+  ps aux --sort=-%cpu | tail -n +2 | head -15 | while read -r line; do
+    local pid=$(echo "$line"  | awk '{print $2}')
+    local cpu=$(echo "$line"  | awk '{print $3}')
+    local mem=$(echo "$line"  | awk '{print $4}')
+    local user=$(echo "$line" | awk '{print $1}')
+
+    # Grab full command, strip leading path to get binary name, truncate
+    local cmd
+    cmd=$(echo "$line" | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}' | sed "s|^[^ ]*/||" | cut -c1-45)
+    # Remove any % signs to prevent printf format issues
+    cmd=$(echo "$cmd" | tr -d '%')
+    [[ -z "$cmd" ]] && cmd="?"
+
+    local cpu_int
+    cpu_int=$(echo "$cpu" | cut -d. -f1)
+    local cpu_color=$GRN
+    (( cpu_int >= 50 )) && cpu_color=$RED
+    (( cpu_int >= 20 && cpu_int < 50 )) && cpu_color=$YEL
+
+    printf "  ${DIM}%-8s${RST}  ${cpu_color}${BLD}%-6s${RST}  ${DIM}%-6s  %-12s${RST}  %s\n" \
+      "$pid" "$cpu" "$mem" "$user" "$cmd"
+  done
+}
+
+get_uptime() {
+  local up
+  up=$(uptime -p 2>/dev/null || uptime | sed 's/.*up //' | sed 's/,.*//')
+  local hostname
+  hostname=$(hostname -s)
+  local user
+  user=$(whoami)
+  local cores
+  cores=$(nproc)
+
+  local load_raw
+  load_raw=$(cat /proc/loadavg)
+  local l1=$(echo "$load_raw"  | awk '{print $1}')
+  local l5=$(echo "$load_raw"  | awk '{print $2}')
+  local l15=$(echo "$load_raw" | awk '{print $3}')
+
+  local p1=$(awk  "BEGIN {v=int(($l1  / $cores) * 100); print (v>100)?100:v}")
+  local p5=$(awk  "BEGIN {v=int(($l5  / $cores) * 100); print (v>100)?100:v}")
+  local p15=$(awk "BEGIN {v=int(($l15 / $cores) * 100); print (v>100)?100:v}")
+
+  local showing
+  showing=$(echo "$SECTIONS" | tr ',' ' ' | tr '[:lower:]' '[:upper:]')
+
+  echo
+  echo -e "${MAG}${BLD}  ╔══════════════════════════════════════════════════╗${RST}"
+  echo -e "${MAG}${BLD}  ║  Linux System Monitor                            ║${RST}"
+  echo -e "${MAG}${BLD}  ╚══════════════════════════════════════════════════╝${RST}"
+  printf "  ${DIM}Host: %-20s  User: %-15s${RST}\n" "$hostname" "$user"
+  printf "  ${DIM}Uptime: %-16s  Cores: %s${RST}\n" "$up" "$cores"
+  printf "  ${DIM}Showing: %s${RST}\n" "$showing"
+  printf "\n"
+  printf "  ${DIM}Load  1m :${RST}  "; bar $p1  20; printf "  ${DIM}(raw: %s)${RST}\n" "$l1"
+  printf "  ${DIM}Load  5m :${RST}  "; bar $p5  20; printf "  ${DIM}(raw: %s)${RST}\n" "$l5"
+  printf "  ${DIM}Load 15m :${RST}  "; bar $p15 20; printf "  ${DIM}(raw: %s)${RST}\n" "$l15"
+}
+
+# ─────────────────────────────────────────────
+#  MAIN
+# ─────────────────────────────────────────────
+
+render() {
+  get_uptime
+  has_section "cpu"       && get_cpu
+  has_section "ram"       && get_ram
+  has_section "disk"      && get_disk
+  has_section "network"   && get_network
+  has_section "processes" && get_processes
+  echo
+}
+
+if $WATCH; then
+  while true; do
+    clear
+    render
+    echo -e "  ${DIM}Refreshing every ${INTERVAL}s — Ctrl+C to quit${RST}"
+    sleep "$INTERVAL"
+  done
+else
+  render
+fi
