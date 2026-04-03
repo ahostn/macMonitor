@@ -13,11 +13,11 @@ MAC OS: COPY RAW file monitor.txt and paste it to monitor.sh; save and exit nano
 
 LINUX: COPY RAW file linuxMonitor.txt and paste it to monitor.sh; save and exit nano
 
-WINDOWS: create file monitor.ps1, open it paste, save. Create monitor.bat and add line: powershell -noexit "& ""C:\...path..to..file...\monitor.ps1"""
-
 run chmod +x monitor.sh
 
 run ./monitor.sh
+
+WINDOWS: create file monitor.ps1, open it, paste, save. Create monitor.bat and add line: powershell -noexit "& ""C:\...path..to..file...\monitor.ps1"""
 
 use -w to watch download/upload and -i <secunds> to refresh display. Default refresh time is 3s.
 
