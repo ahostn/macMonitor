@@ -1,0 +1,248 @@
+#!/bin/bash
+export LC_ALL=C
+export LANG=C
+
+# ─────────────────────────────────────────────
+#  monitor-json.sh - macOS System Monitor (JSON output)
+#  Usage: bash monitor-json.sh [-w] [-i SECONDS] [-s SECTIONS]
+#    -w            Watch mode (auto-refresh)
+#    -i SECONDS    Refresh interval (default: 3)
+#    -s SECTIONS   Comma-separated sections to show:
+#                  cpu, ram, disk, network, processes
+#                  (default: all)
+#
+#  Examples:
+#    bash monitor-json.sh
+#    bash monitor-json.sh -s cpu,ram
+#    bash monitor-json.sh -w -i 5
+#    bash monitor-json.sh -s disk > stats.json
+#    bash monitor-json.sh | jq .
+# ─────────────────────────────────────────────
+
+INTERVAL=3
+WATCH=false
+SECTIONS="cpu,ram,disk,network,processes"
+
+while getopts "wi:s:" opt; do
+  case $opt in
+    w) WATCH=true ;;
+    i) INTERVAL="$OPTARG" ;;
+    s) SECTIONS="$OPTARG" ;;
+    *) echo "Usage: $0 [-w] [-i SECONDS] [-s SECTIONS]"; exit 1 ;;
+  esac
+done
+
+has_section() {
+  echo "$SECTIONS" | tr ',' '\n' | grep -qx "$1"
+}
+
+# ── JSON helpers ──────────────────────────────
+
+json_str()  { printf '"%s"' "$1"; }
+json_int()  { printf '%s'   "$1"; }
+
+# ── Data collectors ───────────────────────────
+
+get_header() {
+  local hostname user uptime_sec uptime_str cores os_name timestamp
+
+  hostname=$(hostname -s)
+  user=$(whoami)
+  uptime_sec=$(sysctl -n kern.boottime | awk '{print $4}' | tr -d ',' | xargs -I{} bash -c 'echo $(( $(date +%s) - {} ))')
+  uptime_str=$(uptime | sed 's/.*up //' | sed 's/,.*//')
+  cores=$(sysctl -n hw.logicalcpu)
+  os_name=$(sw_vers -productName 2>/dev/null)" "$(sw_vers -productVersion 2>/dev/null)
+  timestamp=$(date '+%Y-%m-%dT%H:%M:%S')
+
+  printf '  "header": {\n'
+  printf '    "hostname":   %s,\n'  "$(json_str "$hostname")"
+  printf '    "user":       %s,\n'  "$(json_str "$user")"
+  printf '    "os":         %s,\n'  "$(json_str "$os_name")"
+  printf '    "uptime_sec": %s,\n'  "$(json_int "$uptime_sec")"
+  printf '    "uptime_str": %s,\n'  "$(json_str "$uptime_str")"
+  printf '    "cores":      %s,\n'  "$(json_int "$cores")"
+  printf '    "timestamp":  %s\n'   "$(json_str "$timestamp")"
+  printf '  }'
+}
+
+get_cpu() {
+  local cpu_info user_pct sys_pct idle_pct used_pct cores model
+  local load_raw l1 l5 l15
+
+  cpu_info=$(top -l 1 -n 0 | grep "CPU usage")
+  user_pct=$(echo "$cpu_info" | awk '{gsub(/%/,""); print $3}' | cut -d. -f1)
+  sys_pct=$(echo "$cpu_info"  | awk '{gsub(/%/,""); print $5}' | cut -d. -f1)
+  idle_pct=$(echo "$cpu_info" | awk '{gsub(/%/,""); print $7}' | cut -d. -f1)
+  used_pct=$(( 100 - idle_pct ))
+
+  cores=$(sysctl -n hw.logicalcpu)
+  model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model)
+
+  load_raw=$(uptime | awk -F'load averages:' '{print $2}' | xargs)
+  l1=$(echo "$load_raw"  | awk '{print $1}')
+  l5=$(echo "$load_raw"  | awk '{print $2}')
+  l15=$(echo "$load_raw" | awk '{print $3}')
+
+  printf '  "cpu": {\n'
+  printf '    "model":      %s,\n'  "$(json_str "$model")"
+  printf '    "cores":      %s,\n'  "$(json_int "$cores")"
+  printf '    "load_pct":   %s,\n'  "$(json_int "$used_pct")"
+  printf '    "user_pct":   %s,\n'  "$(json_int "$user_pct")"
+  printf '    "system_pct": %s,\n'  "$(json_int "$sys_pct")"
+  printf '    "idle_pct":   %s,\n'  "$(json_int "$idle_pct")"
+  printf '    "load_1m":    %s,\n'  "$(json_str "$l1")"
+  printf '    "load_5m":    %s,\n'  "$(json_str "$l5")"
+  printf '    "load_15m":   %s\n'   "$(json_str "$l15")"
+  printf '  }'
+}
+
+get_ram() {
+  local page_size vm total_phys
+  local free active inactive wired compressed used pct
+
+  page_size=$(pagesize)
+  vm=$(vm_stat)
+  total_phys=$(sysctl -n hw.memsize)
+
+  free=$(( $(echo "$vm"       | awk '/Pages free/      {gsub(/[^0-9]/,"",$NF); print $NF+0}') * page_size ))
+  active=$(( $(echo "$vm"     | awk '/Pages active/    {gsub(/[^0-9]/,"",$NF); print $NF+0}') * page_size ))
+  inactive=$(( $(echo "$vm"   | awk '/Pages inactive/  {gsub(/[^0-9]/,"",$NF); print $NF+0}') * page_size ))
+  wired=$(( $(echo "$vm"      | awk '/Pages wired/     {gsub(/[^0-9]/,"",$NF); print $NF+0}') * page_size ))
+  compressed=$(( $(echo "$vm" | awk '/Pages occupied by compressor/ {gsub(/[^0-9]/,"",$NF); print $NF+0}') * page_size ))
+
+  used=$(( active + wired + compressed ))
+  pct=$(( used * 100 / total_phys ))
+
+  printf '  "ram": {\n'
+  printf '    "total_bytes":      %s,\n'  "$(json_int "$total_phys")"
+  printf '    "used_bytes":       %s,\n'  "$(json_int "$used")"
+  printf '    "free_bytes":       %s,\n'  "$(json_int "$free")"
+  printf '    "active_bytes":     %s,\n'  "$(json_int "$active")"
+  printf '    "inactive_bytes":   %s,\n'  "$(json_int "$inactive")"
+  printf '    "wired_bytes":      %s,\n'  "$(json_int "$wired")"
+  printf '    "compressed_bytes": %s,\n'  "$(json_int "$compressed")"
+  printf '    "used_pct":         %s\n'   "$(json_int "$pct")"
+  printf '  }'
+}
+
+get_disk() {
+  printf '  "disk": [\n'
+  local first=true
+
+  df -H | grep -E '^/dev/' | while read -r line; do
+    local dev=$(echo "$line"   | awk '{print $1}')
+    local size=$(echo "$line"  | awk '{print $2}')
+    local used=$(echo "$line"  | awk '{print $3}')
+    local avail=$(echo "$line" | awk '{print $4}')
+    local pct=$(echo "$line"   | awk '{gsub(/%/,""); print $5}')
+    local mount=$(echo "$line" | awk '{print $9}')
+
+    # Get raw bytes via df -k for accurate JSON values
+    local raw
+    raw=$(df -k "$mount" 2>/dev/null | tail -1)
+    local size_b=$(( $(echo "$raw" | awk '{print $2}') * 1024 ))
+    local used_b=$(( $(echo "$raw" | awk '{print $3}') * 1024 ))
+    local avail_b=$(( $(echo "$raw" | awk '{print $4}') * 1024 ))
+
+    [[ "$first" == true ]] && first=false || printf ',\n'
+
+    printf '    {\n'
+    printf '      "device":      %s,\n'  "$(json_str "$dev")"
+    printf '      "mount":       %s,\n'  "$(json_str "$mount")"
+    printf '      "total_bytes": %s,\n'  "$(json_int "$size_b")"
+    printf '      "used_bytes":  %s,\n'  "$(json_int "$used_b")"
+    printf '      "free_bytes":  %s,\n'  "$(json_int "$avail_b")"
+    printf '      "used_pct":    %s\n'   "$(json_int "$pct")"
+    printf '    }'
+  done
+
+  printf '\n  ]'
+}
+
+get_network() {
+  local iface ip_addr mac gateway rx_bytes tx_bytes
+
+  iface=$(route get default 2>/dev/null | awk '/interface:/{print $2}')
+
+  if [[ -n "$iface" ]]; then
+    ip_addr=$(ipconfig getifaddr "$iface" 2>/dev/null)
+    mac=$(ifconfig "$iface" 2>/dev/null | awk '/ether/{print $2}')
+    gateway=$(route get default 2>/dev/null | awk '/gateway:/{print $2}')
+
+    local stats
+    stats=$(netstat -ibn | awk -v iface="$iface" '$1 == iface && /Link/ {print $7, $10; exit}')
+    rx_bytes=$(echo "$stats" | awk '{print $1}')
+    tx_bytes=$(echo "$stats" | awk '{print $2}')
+  fi
+
+  printf '  "network": {\n'
+  printf '    "interface": %s,\n'  "$(json_str "${iface:-unknown}")"
+  printf '    "ip":        %s,\n'  "$(json_str "${ip_addr:-unknown}")"
+  printf '    "mac":       %s,\n'  "$(json_str "${mac:-unknown}")"
+  printf '    "gateway":   %s,\n'  "$(json_str "${gateway:-unknown}")"
+  printf '    "rx_bytes":  %s,\n'  "$(json_int "${rx_bytes:-0}")"
+  printf '    "tx_bytes":  %s\n'   "$(json_int "${tx_bytes:-0}")"
+  printf '  }'
+}
+
+get_processes() {
+  printf '  "processes": [\n'
+  local first=true
+
+  ps aux | sort -rn -k3 | awk 'NR>1 && NR<=16' | while read -r line; do
+    local pid=$(echo "$line"  | awk '{print $2}')
+    local cpu=$(echo "$line"  | awk '{print $3}')
+    local mem=$(echo "$line"  | awk '{print $4}')
+    local user=$(echo "$line" | awk '{print $1}')
+    local cmd=$(echo "$line"  | awk '{for(i=11;i<=NF;i++) printf "%s ", $i; print ""}' | sed 's|^[^ ]*/||' | cut -c1-60 | tr -d '"\\')
+
+    [[ "$first" == true ]] && first=false || printf ',\n'
+
+    printf '    {\n'
+    printf '      "pid":     %s,\n'  "$(json_int "$pid")"
+    printf '      "cpu_pct": %s,\n'  "$(json_str "$cpu")"
+    printf '      "mem_pct": %s,\n'  "$(json_str "$mem")"
+    printf '      "user":    %s,\n'  "$(json_str "$user")"
+    printf '      "command": %s\n'   "$(json_str "$cmd")"
+    printf '    }'
+  done
+
+  printf '\n  ]'
+}
+
+# ── Render ────────────────────────────────────
+
+render() {
+  local sections=()
+  has_section "cpu"       && sections+=("cpu")
+  has_section "ram"       && sections+=("ram")
+  has_section "disk"      && sections+=("disk")
+  has_section "network"   && sections+=("network")
+  has_section "processes" && sections+=("processes")
+
+  printf '{\n'
+  get_header
+
+  for sec in "${sections[@]}"; do
+    printf ',\n'
+    case $sec in
+      cpu)       get_cpu ;;
+      ram)       get_ram ;;
+      disk)      get_disk ;;
+      network)   get_network ;;
+      processes) get_processes ;;
+    esac
+  done
+
+  printf '\n}\n'
+}
+
+if $WATCH; then
+  while true; do
+    clear
+    render
+    sleep "$INTERVAL"
+  done
+else
+  render
+fi
